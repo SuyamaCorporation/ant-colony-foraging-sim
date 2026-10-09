@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>アリのフェロモン採餌シミュレーション</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #1a120a; color: #e8d5b0; }
+  .card { background: #1e1508; border: 1px solid #4a3520; }
+  .btn-brown { background: #7c4f2a; }
+  .btn-brown:hover { background: #8b5e3c; }
+  .btn-green { background: #2d5a1b; }
+  .btn-green:hover { background: #3a7322; }
+  input[type=range] { accent-color: #8b5e3c; }
+  #antCanvas { cursor: crosshair; touch-action: none; }
+  .stat-val { color: #86efac; font-weight: bold; }
+</style>
+</head>
+<body class="min-h-screen p-3">
+<h1 class="text-xl font-bold text-center mb-3" style="color:#c8a77a">アリのフェロモン採餌シミュレーション</h1>
+
+<div class="max-w-5xl mx-auto">
+  <div class="flex flex-wrap gap-3">
+    <!-- Canvas -->
+    <div class="flex-1 min-w-64">
+      <canvas id="antCanvas" class="rounded-xl border w-full" style="border-color:#4a3520;background:#0a0800"></canvas>
+      <p class="text-xs text-center mt-1" style="color:#8b7355">クリックで餌を追加 (最大5か所)</p>
+    </div>
+    <!-- Controls -->
+    <div class="w-56 space-y-3">
+      <div class="card rounded-xl p-3 space-y-2">
+        <p class="text-xs font-semibold" style="color:#c8a77a">アリの設定</p>
+        <div>
+          <label class="text-xs" style="color:#b08a5a">アリの数: <span id="antCountVal">200</span></label>
+          <input type="range" id="antCountSlider" min="100" max="500" value="200" step="50" class="w-full" aria-label="アリの数"
+            oninput="document.getElementById('antCountVal').textContent=this.value">
+        </div>
+        <div>
+          <label class="text-xs" style="color:#b08a5a">蒸発率: <span id="evapVal">2</span>%</label>
+          <input type="range" id="evapSlider" min="1" max="15" value="2" class="w-full" aria-label="フェロモン蒸発率"
+            oninput="document.getElementById('evapVal').textContent=this.value">
+        </div>
+        <div>
+          <label class="text-xs" style="color:#b08a5a">フェロモン強度: <span id="pheroVal">5</span></label>
+          <input type="range" id="pheroSlider" min="1" max="20" value="5" class="w-full" aria-label="フェロモン強度"
+            oninput="document.getElementById('pheroVal').textContent=this.value">
+        </div>
+      </div>
+      <div class="card rounded-xl p-3 space-y-2">
+        <p class="text-xs font-semibold" style="color:#c8a77a">操作</p>
+        <button id="startBtn" class="btn-brown w-full py-1 rounded text-sm text-white" aria-label="シミュレーション開始/停止">開始</button>
+        <button id="resetBtn" class="w-full py-1 rounded text-sm text-white" style="background:#3a2010;border:1px solid #6a4020" aria-label="リセット">リセット</button>
+        <button id="clearFoodBtn" class="w-full py-1 rounded text-sm text-white" style="background:#1a3010;border:1px solid #2d5a1b" aria-label="餌をクリア">餌をクリア</button>
+      </div>
+      <div class="card rounded-xl p-3 space-y-1">
+        <p class="text-xs font-semibold mb-1" style="color:#c8a77a">統計</p>
+        <div class="text-xs flex justify-between">
+          <span style="color:#b08a5a">採餌回数:</span>
+          <span id="statCollected" class="stat-val">0</span>
+        </div>
+        <div class="text-xs flex justify-between">
+          <span style="color:#b08a5a">活動中アリ:</span>
+          <span id="statActive" class="stat-val">0</span>
+        </div>
+        <div class="text-xs flex justify-between">
+          <span style="color:#b08a5a">餌の数:</span>
+          <span id="statFood" class="stat-val">0</span>
+        </div>
+        <div class="text-xs flex justify-between">
+          <span style="color:#b08a5a">フェロモン強度(最大):</span>
+          <span id="statMaxPhero" class="stat-val">0</span>
+        </div>
+      </div>
+      <div class="card rounded-xl p-3">
+        <p class="text-xs font-semibold mb-1" style="color:#c8a77a">凡例</p>
+        <div class="text-xs space-y-1">
+          <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full inline-block" style="background:#8b5e3c"></span>巣</div>
+          <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full inline-block" style="background:#dc2626"></span>餌を持つアリ</div>
+          <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full inline-block" style="background:#c8a77a"></span>探索中アリ</div>
+          <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full inline-block" style="background:#22c55e"></span>餌/フェロモン</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('antCanvas');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+let running = false;
+let animId = null;
+let ants = [];
+let foods = [];
+let pheroHome = null; // Float32Array grid (home scent)
+let pheroFood = null; // Float32Array grid (food scent)
+let GRID_W, GRID_H;
+const GRID_SCALE = 4; // pixels per cell
+let nestX, nestY;
+let totalCollected = 0;
+
+function resize() {
+  const containerW = canvas.parentElement.clientWidth;
+  W = containerW;
+  H = Math.max(380, window.innerHeight - 220);
+  canvas.width = W; canvas.height = H;
+  GRID_W = Math.ceil(W / GRID_SCALE);
+  GRID_H = Math.ceil(H / GRID_SCALE);
+  pheroHome = new Float32Array(GRID_W * GRID_H);
+  pheroFood = new Float32Array(GRID_W * GRID_H);
+  nestX = W / 2; nestY = H / 2;
+}
+
+resize();
+window.addEventListener('resize', () => { resize(); initAnts(); });
+
+function gIdx(gx, gy) { return gy * GRID_W + gx; }
+function toGrid(px, py) { return [Math.floor(px/GRID_SCALE), Math.floor(py/GRID_SCALE)]; }
+
+function initAnts() {
+  const count = +document.getElementById('antCountSlider').value;
+  ants = [];
+  for(let i=0;i<count;i++) {
+    ants.push({
+      x: nestX + (Math.random()-0.5)*20,
+      y: nestY + (Math.random()-0.5)*20,
+      angle: Math.random()*Math.PI*2,
+      hasFood: false,
+      steps: 0,
+    });
+  }
+  totalCollected = 0;
+  pheroHome && pheroHome.fill(0);
+  pheroFood && pheroFood.fill(0);
+}
+
+function addFood(x, y) {
+  if(foods.length >= 5) return;
+  foods.push({x, y, amount: 300});
+}
+
+canvas.addEventListener('click', e => {
+  const rect=canvas.getBoundingClientRect();
+  const sx=W/rect.width, sy=H/rect.height;
+  const x=(e.clientX-rect.left)*sx, y=(e.clientY-rect.top)*sy;
+  // Don't place too close to nest
+  const dx=x-nestX, dy=y-nestY;
+  if(Math.sqrt(dx*dx+dy*dy) < 30) return;
+  addFood(x,y);
+  document.getElementById('statFood').textContent=foods.length;
+});
+
+document.getElementById('startBtn').addEventListener('click', () => {
+  running = !running;
+  document.getElementById('startBtn').textContent = running?'一時停止':'開始';
+  if(running) loop();
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  running=false;
+  document.getElementById('startBtn').textContent='開始';
+  cancelAnimationFrame(animId);
+  initAnts();
+  document.getElementById('statCollected').textContent='0';
+  document.getElementById('statFood').textContent=foods.length;
+});
+document.getElementById('clearFoodBtn').addEventListener('click', () => {
+  foods=[];
+  pheroFood && pheroFood.fill(0);
+  document.getElementById('statFood').textContent='0';
+});
+
+const SPEED = 2.0;
+const WANDER = 0.5;
+const SENSE_DIST = 20;
+const SENSE_ANGLE = Math.PI/4;
+const ANT_TRAIL_DEPOSIT = 5;
+
+function sensePhero(ant, grid) {
+  const angles = [ant.angle - SENSE_ANGLE, ant.angle, ant.angle + SENSE_ANGLE];
+  return angles.map(a => {
+    const sx = ant.x + Math.cos(a)*SENSE_DIST;
+    const sy = ant.y + Math.sin(a)*SENSE_DIST;
+    const [gx,gy] = toGrid(sx, sy);
+    if(gx<0||gx>=GRID_W||gy<0||gy>=GRID_H) return 0;
+    return grid[gIdx(gx,gy)];
+  });
+}
+
+function stepAnts() {
+  const evap = 1 - (+document.getElementById('evapSlider').value/100);
+  const pheroStrength = +document.getElementById('pheroSlider').value;
+
+  // Evaporate
+  for(let i=0;i<pheroHome.length;i++) {
+    pheroHome[i]=Math.max(0,pheroHome[i]*evap - 0.005);
+    pheroFood[i]=Math.max(0,pheroFood[i]*evap - 0.005);
+  }
+
+  ants.forEach(ant => {
+    if(ant.hasFood) {
+      // Heading home: follow home pheromone
+      const [left, fwd, right] = sensePhero(ant, pheroHome);
+      if(fwd>=left && fwd>=right) { /* keep */ }
+      else if(left>right) ant.angle -= WANDER;
+      else ant.angle += WANDER;
+      ant.angle += (Math.random()-0.5)*0.3;
+
+      // Also just aim toward nest
+      const dx=nestX-ant.x, dy=nestY-ant.y;
+      const distNest=Math.sqrt(dx*dx+dy*dy);
+      const nestAngle=Math.atan2(dy,dx);
+      ant.angle=ant.angle*0.3+nestAngle*0.7;
+
+      // Deposit food pheromone
+      const [gx,gy]=toGrid(ant.x,ant.y);
+      if(gx>=0&&gx<GRID_W&&gy>=0&&gy<GRID_H) pheroFood[gIdx(gx,gy)]+=pheroStrength;
+
+      // Arrived home?
+      if(distNest < 15) {
+        ant.hasFood=false;
+        totalCollected++;
+        ant.angle=Math.random()*Math.PI*2;
+      }
+    } else {
+      // Searching: follow food pheromone
+      const [left, fwd, right] = sensePhero(ant, pheroFood);
+      const total = left+fwd+right;
+      if(total < 0.1) {
+        ant.angle += (Math.random()-0.5)*WANDER*2;
+      } else {
+        if(fwd>=left && fwd>=right) { /* keep */ }
+        else if(left>right) ant.angle -= WANDER*0.5;
+        else ant.angle += WANDER*0.5;
+        ant.angle += (Math.random()-0.5)*0.3;
+      }
+
+      // Deposit home pheromone (stronger near nest)
+      const [gx,gy]=toGrid(ant.x,ant.y);
+      if(gx>=0&&gx<GRID_W&&gy>=0&&gy<GRID_H) pheroHome[gIdx(gx,gy)]+=pheroStrength*0.5;
+
+      // Check for food
+      for(let f of foods) {
+        const dx=f.x-ant.x, dy=f.y-ant.y;
+        if(Math.sqrt(dx*dx+dy*dy)<8 && f.amount>0) {
+          ant.hasFood=true;
+          f.amount--;
+          ant.angle=ant.angle+Math.PI+(Math.random()-0.5)*0.5;
+          break;
+        }
+      }
+    }
+
+    // Move
+    ant.x += Math.cos(ant.angle)*SPEED;
+    ant.y += Math.sin(ant.angle)*SPEED;
+
+    // Bounce off walls
+    if(ant.x<2){ant.x=2;ant.angle=Math.PI-ant.angle;}
+    if(ant.x>W-2){ant.x=W-2;ant.angle=Math.PI-ant.angle;}
+    if(ant.y<2){ant.y=2;ant.angle=-ant.angle;}
+    if(ant.y>H-2){ant.y=H-2;ant.angle=-ant.angle;}
+  });
+
+  // Remove depleted food
+  foods = foods.filter(f=>f.amount>0);
+}
+
+function drawSim() {
+  ctx.fillStyle='rgba(10,8,0,0.6)';
+  ctx.fillRect(0,0,W,H);
+
+  // Draw pheromone overlay
+  const imageData = ctx.createImageData(W, H);
+  const data = imageData.data;
+  for(let gy=0;gy<GRID_H;gy++) for(let gx=0;gx<GRID_W;gx++) {
+    const ph_f = Math.min(1, pheroFood[gIdx(gx,gy)] / 50);
+    const ph_h = Math.min(1, pheroHome[gIdx(gx,gy)] / 50);
+    for(let dy=0;dy<GRID_SCALE;dy++) for(let dx=0;dx<GRID_SCALE;dx++){
+      const px=gx*GRID_SCALE+dx, py=gy*GRID_SCALE+dy;
+      if(px>=W||py>=H) continue;
+      const idx=(py*W+px)*4;
+      data[idx]=Math.floor(ph_h*80);
+      data[idx+1]=Math.floor(ph_f*160);
+      data[idx+2]=0;
+      data[idx+3]=Math.floor((ph_f+ph_h*0.5)*180);
+    }
+  }
+  ctx.putImageData(imageData,0,0);
+
+  // Draw food sources
+  foods.forEach(f => {
+    ctx.beginPath(); ctx.arc(f.x,f.y,8,0,Math.PI*2);
+    ctx.fillStyle='#22c55e'; ctx.fill();
+    ctx.strokeStyle='#86efac'; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle='#e8d5b0'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(Math.ceil(f.amount/30), f.x, f.y-12);
+  });
+
+  // Draw nest
+  const nestGrad = ctx.createRadialGradient(nestX,nestY,2,nestX,nestY,20);
+  nestGrad.addColorStop(0,'#c8a77a');
+  nestGrad.addColorStop(1,'#4a2e10');
+  ctx.beginPath(); ctx.arc(nestX,nestY,18,0,Math.PI*2);
+  ctx.fillStyle=nestGrad; ctx.fill();
+  ctx.strokeStyle='#e8d5b0'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='#1a0a00'; ctx.font='bold 10px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('巣', nestX, nestY+4);
+
+  // Draw ants
+  ants.forEach(ant => {
+    ctx.beginPath(); ctx.arc(ant.x, ant.y, 2, 0, Math.PI*2);
+    ctx.fillStyle = ant.hasFood ? '#ef4444' : '#c8a77a';
+    ctx.fill();
+    // Direction indicator
+    ctx.beginPath();
+    ctx.moveTo(ant.x, ant.y);
+    ctx.lineTo(ant.x+Math.cos(ant.angle)*4, ant.y+Math.sin(ant.angle)*4);
+    ctx.strokeStyle = ant.hasFood ? '#fca5a5' : '#8b7355';
+    ctx.lineWidth=0.8; ctx.stroke();
+  });
+
+  // Update stats
+  document.getElementById('statActive').textContent=ants.filter(a=>a.hasFood).length;
+  document.getElementById('statCollected').textContent=totalCollected;
+  document.getElementById('statFood').textContent=foods.length;
+  let maxP=0; for(let v of pheroFood) if(v>maxP) maxP=v;
+  document.getElementById('statMaxPhero').textContent=maxP.toFixed(1);
+}
+
+function loop() {
+  if(!running) return;
+  animId = requestAnimationFrame(loop);
+  for(let i=0;i<3;i++) stepAnts();
+  drawSim();
+}
+
+// Init
+initAnts();
+drawSim();
+
+// Add default food sources
+addFood(W*0.2, H*0.25);
+addFood(W*0.75, H*0.7);
+document.getElementById('statFood').textContent=foods.length;
+</script>
+</body>
+</html>
